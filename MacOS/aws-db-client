@@ -1,0 +1,413 @@
+#!/usr/local/bash5/bin/bash
+
+#===============================
+# CONFIGURATION
+#===============================
+
+# Config file that persists settings between runs
+CONFIG_FILE=""
+
+# Configuration fields and their interactive prompts
+readonly REQUIRED_CONFIGS=(
+    "AWS_PROFILE:Enter your AWS profile name:"
+    "AWS_TARGET:Enter the AWS instance ID (e.g. i-0123456789abcdef0):"
+    "AWS_HOST:Enter the AWS host (e.g. my-cluster.123456789012.region.redshift.amazonaws.com):"
+    "PORT:Enter the port number [default: 5439]:"
+    "DB_CLIENT_PATH:Enter the path to your DB Client (e.g. /Applications/DBeaver.app/Contents/MacOS/dbeaver):"
+)
+
+AWS_PROFILE=""
+AWS_TARGET=""
+AWS_HOST=""
+PORT="5439"
+DB_CLIENT_PATH=""
+
+declare -A MESSAGE_COLORS=(
+    ["status"]='\033[0;34m'   
+    ["success"]='\033[0;32m'  
+    ["error"]='\033[0;31m'    
+    ["warning"]='\033[1;33m'  
+    ["NC"]='\033[0m'          
+)
+
+declare -A EMOJI=(
+    ["status"]="ℹ️ "
+    ["success"]="✅"
+    ["error"]="❌"
+    ["warning"]="✨"
+)
+
+#===============================
+# CONFIGURATION MANAGEMENT
+#===============================
+
+# Validate input configuration values.
+validate_config() {
+    local key=$1
+    local value=$2
+    
+    case $key in
+        "PORT")
+            if ! [[ $value =~ ^[0-9]+$ ]] || [ $value -lt 1 ] || [ $value -gt 65535 ]; then
+                return 1
+            fi
+            ;;
+        "DB_CLIENT_PATH")
+            if [ ! -f "$value" ]; then
+                return 1
+            fi
+            ;;
+        "AWS_TARGET" | "AWS_HOST")
+            if [ -z "$value" ]; then
+                return 1
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# Load configuration from the configuration file.
+load_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        return 1
+    fi
+    
+    # Source the config file
+    source "$CONFIG_FILE"
+    
+    # Validate all required configs are present and valid
+    for config in "${REQUIRED_CONFIGS[@]}"; do
+        local key="${config%%:*}"
+        if [ -z "${!key}" ] || ! validate_config "$key" "${!key}"; then
+            print_message warning "Invalid or missing configuration for $key"
+            return 1
+        fi
+    done
+    
+    return 0
+}
+
+# Save configuration to the configuration file.
+save_config() {
+    local key=$1
+    local value=$2
+    
+    # Ensure config file exists
+    if [ ! -f "$CONFIG_FILE" ]; then
+        touch "$CONFIG_FILE" 2>/dev/null
+    fi
+    
+    if grep -q "^$key=" "$CONFIG_FILE" 2>/dev/null; then
+        sed -i '' "s|^$key=.*|$key=\"$value\"|" "$CONFIG_FILE"
+    else
+        echo "$key=\"$value\"" >> "$CONFIG_FILE"
+    fi
+}
+
+# Prompt for and collect configuration values interactively.
+configure() {
+    local reconfigure=${1:-false}
+    trap - SIGINT SIGTERM
+    
+    if [ "$reconfigure" = false ] && load_config; then
+        clear
+        print_message success "Configuration loaded from $CONFIG_FILE"
+        trap cleanup SIGINT SIGTERM
+        return 0
+    fi
+    
+    print_header "📝 CONFIGURATION"
+    declare -A new_config
+    
+    for config in "${REQUIRED_CONFIGS[@]}"; do
+        local key="${config%%:*}"
+        local prompt="${config#*:}"
+        local default_value=""
+        
+        if [[ $prompt =~ \[default:\ ([^]]*)\] ]]; then
+            default_value="${BASH_REMATCH[1]}"
+        fi
+        
+        while true; do
+            local current_value=""
+            if [ "$reconfigure" = true ] && [ -n "${!key}" ]; then
+                current_value=" (current: ${!key})"
+            fi
+            
+            read -p "$(echo -e "${MESSAGE_COLORS[status]}$prompt$current_value ${MESSAGE_COLORS[NC]}") " input
+            
+            if [ $? -gt 128 ]; then
+                echo -e "\nConfiguration cancelled"
+                exit 1
+            fi
+            
+            if [ -z "$input" ]; then
+                input="${!key:-$default_value}"
+            fi
+            
+            if validate_config "$key" "$input"; then
+                new_config[$key]="$input"
+                declare -g "$key=$input"
+                break
+            else
+                print_message error "Invalid value for $key. Please try again."
+            fi
+        done
+    done
+    
+    if [ "$reconfigure" = true ]; then
+        [ -f "$CONFIG_FILE" ] && cp "$CONFIG_FILE" "${CONFIG_FILE}.backup"
+    fi
+    
+    > "$CONFIG_FILE"
+    for key in "${!new_config[@]}"; do
+        echo "$key=\"${new_config[$key]}\"" >> "$CONFIG_FILE"
+    done
+    
+    print_message success "Configuration completed"
+    trap cleanup SIGINT SIGTERM
+}
+
+#===============================
+# UTILITY FUNCTIONS
+#===============================
+
+# Print formatted messages based on message type.
+print_message() {
+    local type=$1
+    local message=$2
+    local indent=${3:-false}
+    
+    local color="${MESSAGE_COLORS[$type]:-'\033[1;37m'}"
+    
+    if [ "$indent" = true ]; then
+        printf "${color}    %b${MESSAGE_COLORS[NC]}\n" "$message"
+    else
+        printf "${color}${EMOJI[$type]:-} %b${MESSAGE_COLORS[NC]}\n" "$message"
+    fi
+    [ "$type" = "error" ] && return 1
+}
+
+# Print section headers.
+print_header() {
+    echo -e "\n\n${MESSAGE_COLORS[BOLD]}$1${MESSAGE_COLORS[NC]}"
+    echo "----------------------------------------"
+}
+
+#===============================
+# PROCESS MANAGEMENT
+#===============================
+
+# Check if the specified port is in use.
+check_port() {
+    lsof -ti:$PORT 2>/dev/null
+}
+
+# Terminate a process by PID.
+kill_process() {
+    local pid=$1
+    local force=${2:-false}
+    
+    if [[ "$force" == true ]]; then
+        kill -9 $pid >/dev/null 2>&1
+    else
+        kill $pid >/dev/null 2>&1
+    fi
+}
+
+# Manage the state of a process.
+manage_process() {
+    local action=$1
+    local pid=$2
+    local name=$3
+    
+    case $action in
+        "check")
+            kill -0 $pid 2>/dev/null
+            return $?
+            ;;
+        "terminate")
+            if manage_process check $pid; then
+                kill_process $pid
+                print_message success "$name (PID: $pid) terminated"
+            else
+                print_message warning "$name (PID: $pid) already terminated"
+            fi
+            ;;
+    esac
+}
+
+# Cleanup resources on exit.
+cleanup() {
+    print_header "🗑️  CLEANUP"
+    
+    manage_process terminate $DB_CLIENT_PID "Database Client"
+    manage_process terminate $SSM_PID "AWS SSM session"
+    
+    local PORT_PID=$(check_port)
+    if [ ! -z "$PORT_PID" ]; then
+        kill_process $PORT_PID true
+        print_message success "Forced release of port $PORT"
+    fi
+    
+    [ -p "$PIPE" ] && rm -f "$PIPE" 2>/dev/null
+    print_message success "Cleanup complete"
+    exit 0
+}
+
+#===============================
+# AWS SSM SESSION HANDLING
+#===============================
+
+# Generate JSON parameters for AWS SSM session.
+get_ssm_parameters() {
+    cat <<EOF
+{
+    "host":["$AWS_HOST"],
+    "portNumber":["$PORT"],
+    "localPortNumber":["$PORT"]
+}
+EOF
+}
+
+# Monitor AWS SSM session output.
+handle_ssm_output() {
+    local line=$1
+    case "$line" in
+        *"Starting session"*)
+            print_message status "Session starting: Starting session with SessionId: ${line#*: }"
+            ;;
+        *"Port"* | *"Command"*)
+            [[ ! "$line" =~ "died with" ]] && print_message status "Port configuration: ${line}"
+            ;;
+        *"Waiting for connections"*)
+            print_message status "Awaiting connections..."
+            echo "ready" > "$PIPE"
+            ;;
+        *"Connection accepted"*)
+            echo ""
+            print_message success "Connection established"
+            print_message status "Press Ctrl+C to exit & run cleanup"
+            ;;
+    esac
+}
+
+# Start AWS SSM session with port forwarding.
+start_ssm_session() {
+    PIPE=$(mktemp -u)
+    mkfifo $PIPE
+    
+    aws-vault exec $AWS_PROFILE -- aws ssm start-session \
+        --target $AWS_TARGET \
+        --document-name AWS-StartPortForwardingSessionToRemoteHost \
+        --parameters "$(get_ssm_parameters)" 2>&1 | \
+    while read line; do
+        if [[ "$line" == *"error"* ]] || [[ "$line" == *"Error"* ]]; then
+            print_message error "AWS Vault/SSM Error: $line"
+            cleanup
+            exit 1
+        fi
+        handle_ssm_output "$line"
+    done &
+    
+    SSM_PID=$!
+    read -r ready < "$PIPE"
+    
+    if ! manage_process check $SSM_PID; then
+        print_message error "Failed to start AWS SSM session"
+        cleanup
+        exit 1
+    fi
+    
+    print_message success "AWS SSM session started (PID: $SSM_PID)"
+}
+
+#===============================
+# MAIN EXECUTION
+#===============================
+
+# Launch the database client.
+launch_db_client() {
+    print_message status "Launching database client..."
+    "$DB_CLIENT_PATH" >/dev/null 2>&1 &
+    DB_CLIENT_PID=$!
+    print_message success "Database client launched (PID: $DB_CLIENT_PID)"
+}
+
+# Display process information.
+show_process_info() {
+    print_header "🔍 PROCESS MONITORING"
+    print_message status "Monitoring active processes:"
+    print_message status "• AWS SSM Session (PID: $SSM_PID)" true
+    print_message status "• Database Client (PID: $DB_CLIENT_PID)" true
+}
+
+# Show help message.
+show_help() {
+    cat << EOF
+AWS Database Client Connection Utility
+
+Usage: $(basename "$0") [OPTIONS]
+
+Options:
+    -h, --help                      Show this help message
+    -c, --configure                 Reconfigure all settings
+    -f, --config-file <path>        Specify custom config file location
+
+Configuration:
+    AWS_PROFILE                     AWS profile name (e.g., development, production)
+    AWS_TARGET                      AWS instance ID
+    AWS_HOST                        Redshift host address
+    PORT                            Port number (default: 5439)
+    DB_CLIENT_PATH                  Path to database client
+
+Notes:
+    • Press Ctrl+C to exit cleanly and end all processes
+    • Configuration can be manually edited in config file
+    • AWS credentials should be configured via aws-vault
+EOF
+}
+
+# Main function to drive the script's execution.
+main() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -c|--configure)
+                shift
+                configure true
+                exit 0
+                ;;
+            -f|--config-file)
+                CONFIG_FILE="$2"
+                shift 2
+                ;;
+            *)
+                echo "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    # Set default config file if none specified
+    CONFIG_FILE=${CONFIG_FILE:-"$HOME/.aws-db-client.conf"}
+
+    configure
+    trap cleanup SIGINT SIGTERM
+    
+    print_header "🌐 AWS SSM CONNECTION"
+    start_ssm_session
+    
+    print_header "🔌 DATABASE CLIENT"
+    launch_db_client
+    show_process_info
+    
+    wait -n $SSM_PID $DB_CLIENT_PID
+    cleanup
+}
+
+main "$@"
