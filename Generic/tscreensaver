@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# Help function to display usage information
+help() {
+  echo "Usage: $0 [options]"
+  echo ""
+  echo "Options:"
+  echo "  -p1 <command>  Command for pane 1 (default: pipes.sh)"
+  echo "  -p2 <command>  Command for pane 2 (default: cmatrix)"
+  echo "  -p3 <command>  Command for pane 3 (default: aafire)"
+  echo "  -p4 <command>  Command for pane 4 (default: cbonsai -S)"
+  echo "  -p5 <command>  Command for pane 5 (default: rain -r)"
+  echo "  -p6 <command>  Command for pane 6 (default: asciiquarium)"
+  echo "  -h             Show this help message"
+  echo ""
+  echo "Example:"
+  echo "  $0 -p1 'pipes.sh -c red' -p2 'cmatrix -C green'"
+  exit 0
+}
+
+# Default screensaver commands if no flags are provided
+cmd0="pipes.sh"
+cmd1="cmatrix"
+cmd2='aafire'
+cmd3="cbonsai -S"
+cmd4="rain -r"
+cmd5="asciiquarium"
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p1) cmd0="$2"; shift 2 ;;
+    -p2) cmd1="$2"; shift 2 ;;
+    -p3) cmd2="$2"; shift 2 ;;
+    -p4) cmd3="$2"; shift 2 ;;
+    -p5) cmd4="$2"; shift 2 ;;
+    -p6) cmd5="$2"; shift 2 ;;
+    -h|--help) help ;;
+    *) echo "Unknown option: $1" >&2; help ;;
+  esac
+done
+
+# Create a new tmux session called "screensavers"
+tmux new-session -d -s screensavers
+
+# Split the first pane horizontally (Pane A -> Pane B)
+tmux split-window -h
+
+# Split the newly created pane (Pane B) horizontally (Pane B -> Pane C)
+tmux select-pane -t 1
+tmux split-window -h
+
+# Split the newly created pane (Pane C) vertically (Pane C -> Pane D)
+tmux select-pane -t 2
+tmux resize-pane -L 10
+tmux split-window -v
+
+# Go back to Pane B and split it vertically (Pane B -> Pane E)
+tmux select-pane -t 1
+tmux split-window -v
+
+# Go back to Pane A and split it vertically (Pane A -> Pane F)
+tmux select-pane -t 0
+tmux resize-pane -L 15
+tmux split-window -v
+
+# Attach panes to tmux session and run the provided or default screensavers in each pane
+tmux attach-session -t screensavers \; \
+  select-pane -t 0 \; send-keys "$cmd0" C-m \; \
+  select-pane -t 1 \; send-keys "$cmd1" C-m \; \
+  select-pane -t 2 \; send-keys "$cmd2" C-m \; \
+  select-pane -t 3 \; send-keys "$cmd3" C-m \; \
+  select-pane -t 4 \; send-keys "$cmd4" C-m \; \
+  select-pane -t 5 \; send-keys "$cmd5" C-m

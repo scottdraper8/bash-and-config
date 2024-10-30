@@ -1,0 +1,170 @@
+#!/bin/bash
+
+# Original code by seehrum (https://www.reddit.com/r/bash/comments/1cj3xee/rainsh_raining_in_the_linux_terminal/)
+
+# Color codes for raindrops:
+# '31' - Red, '32' - Green, '33' - Yellow, '34' - Blue, '35' - Purple, '36' - Cyan, '37' - White
+
+# Function to display help information
+show_help() {
+    echo "Usage: raindrop-script [options]"
+    echo -e "\nOptions:"
+    echo "  -d, --density=DENSITY           Set the density of the raindrops. (Default: 2)"
+    echo -e "                                      Examples: -d 5, --density=3\n"
+    echo "  -c, --char=CHARACTER            Character to use as raindrops. (Default: '💧')"
+    echo -e "                                      Examples: -c @, --char='*'\n"
+    echo "  --color-code=COLOR, -k=COLOR    ANSI color code for the raindrop. (Default: 35 for purple)"
+    echo -e "                                      Examples: -k 32, --color-code=36\n"
+    echo "  -s, --speed=SPEED               Speed of the raindrops. Values: 1 (slowest) to 5 (fastest). (Default: 2)"
+    echo -e "                                      Examples: -s 4, --speed=3\n"
+    echo "  -r, --randomize                 Enable randomization of speed and density every 15 seconds."
+    echo -e "                                      By default, randomization is off.\n"
+    echo "  -h, --help                      Display this help message and exit.\n"
+    read -n 1 -s -r -p "Press any key to exit..."
+}
+
+# Initializes terminal settings: clears the screen, hides the cursor, 
+# disables input echoing, and captures terminal dimensions.
+initialize_screen() {
+    clear
+    tput civis  # Hide cursor
+    stty -echo  # Disable input echoing
+    height=$(tput lines)  # Get terminal height
+    width=$(tput cols)    # Get terminal width
+}
+
+# Declare an associative array to track the position and speed of raindrops.
+declare -A raindrops
+
+# Places raindrops on random columns with random speeds, based on the density.
+place_raindrop() {
+    local chars=("$rain_char")  # Treats rain_char as an array to support multiple characters
+    for ((i=0; i<density; i++)); do
+        for ch in "${chars[@]}"; do
+            local x=$((RANDOM % width))  # Random x position
+            local speed=$((RANDOM % speed_range + 1))  # Random speed
+            raindrops["$x,0,$ch"]=$speed  # Add raindrop to the array with its speed
+        done
+    done
+}
+
+# Moves the raindrops down by their respective speeds and erases them once off-screen.
+move_raindrops() {
+    declare -A new_positions  # Temporary array to hold updated positions
+    local buffer=""
+
+    for pos in "${!raindrops[@]}"; do
+        IFS=',' read -r x y ch <<< "$pos"  # Extract x, y, and character
+        local speed=${raindrops[$pos]}
+        local newY=$((y + speed))  # Calculate new y position
+        buffer+="\e[${y};${x}H "  # Clear the old position
+
+        if [ $newY -lt $height ]; then  # Check if still within the screen
+            buffer+="\e[${newY};${x}H\e[${color}m${ch}\e[0m"  # Move raindrop to new position
+            new_positions["$x,$newY,$ch"]=$speed  # Store new position and speed
+        fi
+    done
+
+    raindrops=()  # Clear old raindrops
+    for k in "${!new_positions[@]}"; do
+        raindrops["$k"]=${new_positions["$k"]}  # Update with new positions
+    done
+    echo -ne "$buffer"  # Output the updated buffer
+}
+
+# Resets terminal settings to normal on exit (shows cursor, enables input echoing).
+cleanup() {
+    tput cnorm  # Show cursor again
+    stty echo  # Re-enable input echoing
+    clear
+    exit 0
+}
+
+# Trap signals to ensure cleanup is called on exit or script interruption.
+trap cleanup SIGINT SIGTERM EXIT
+
+# Randomizes density and speed every 15 seconds if randomization is enabled.
+randomize_vars() {
+    if [[ "$randomize" == "true" ]]; then
+        while true; do
+            density=$((RANDOM % 10 + 1))  # Randomize density between 1 and 10
+            speed_range=$((RANDOM % 5 + 1))  # Randomize speed between 1 and 5
+            sleep 15  # Wait 15 seconds before next randomization
+        done
+    fi
+}
+
+# Set default values for parameters.
+density=2
+rain_char='💧'
+color=35
+speed_range=2
+randomize=false
+
+# Parse command-line arguments and flags.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d=*|--density=*)  # Handle --density=VALUE or -d=VALUE
+            density="${1#*=}"
+            shift
+            ;;
+        -d|--density)  # Handle --density VALUE or -d VALUE
+            density="$2"
+            shift 2
+            ;;
+        -c=*|--char=*)  # Handle --char=VALUE or -c=VALUE
+            rain_char="${1#*=}"
+            shift
+            ;;
+        -c|--char)  # Handle --char VALUE or -c VALUE
+            rain_char="$2"
+            shift 2
+            ;;
+        --color-code=*|-k=*)  # Handle --color-code=VALUE or -k=VALUE
+            color="${1#*=}"
+            shift
+            ;;
+        --color-code|-k)  # Handle --color-code VALUE or -k VALUE
+            color="$2"
+            shift 2
+            ;;
+        -s=*|--speed=*)  # Handle --speed=VALUE or -s=VALUE
+            speed_range="${1#*=}"
+            shift
+            ;;
+        -s|--speed)  # Handle --speed VALUE or -s VALUE
+            speed_range="$2"
+            shift 2
+            ;;
+        -r|--randomize)  # Handle --randomize or -r without an argument
+            randomize=true
+            shift
+            ;;
+        -h|--help)  # Display help message and exit
+            show_help
+            exit 0
+            ;;
+        *)  # Handle invalid options
+            echo "Error: Invalid option '$1'"
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
+# Initialize the screen (clear, hide cursor, disable echo).
+initialize_screen
+
+# If randomization is enabled, run the randomize_vars function in the background.
+randomize_vars &
+
+# Main loop for animation: place and move raindrops, check for 'q' key to quit.
+while true; do
+    read -s -n 1 -t 0.01 key  # Read keyboard input non-blocking
+    if [[ $key == "q" ]]; then  # Exit if 'q' is pressed
+        cleanup
+    fi
+    place_raindrop  # Place new raindrops
+    move_raindrops  # Move existing raindrops
+    sleep 0.01  # Small delay to control animation speed
+done
