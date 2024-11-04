@@ -22,6 +22,7 @@ alias tree-3='exa --tree -L 3'              # Display a tree view up to 3 levels
 
 # Git
 alias git-commit-all="git add -A && git commit -m"
+alias git-push="git push origin $(git branch --show-current)"
 
 # Networking
 alias myip="curl ifconfig.me"               # Display the external IP address
