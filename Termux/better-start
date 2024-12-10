@@ -1,0 +1,41 @@
+#!/usr/bin/env zsh
+
+# Check if ~/.hushlogin exists, create it if it doesn't
+if [[ ! -f ~/.hushlogin ]]; then
+  touch ~/.hushlogin
+fi
+
+# Create the Termux banner
+terminal_width=$(tput cols)
+text="Termux"
+fontfile="standard"
+
+tput setaf 2
+
+figlet_output=$(figlet -f $fontfile -w 1000 "$text")
+text_width=$(echo "$figlet_output" | awk '{ print length }' | sort -nr | head -n 1)
+padding=$(( (terminal_width - text_width) / 2 ))
+centered_output=$(echo "$figlet_output" | sed "s/^/$(printf '%*s' $padding '')/")
+
+echo "$centered_output"
+
+tput sgr0
+
+# Run neofetch
+echo -e ""
+neofetch
+
+# Divider
+printf '%*s' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '_'
+
+# Package and repository info list
+echo -e "\n\n  Total number of packages installed: $(pkg list-installed 2>/dev/null | wc -l)"
+echo -e "\n  Repositories installed:"
+
+{
+    cat $PREFIX/etc/apt/sources.list
+    cat $PREFIX/etc/apt/sources.list.d/*.list 2>/dev/null
+} | grep -v '^#' | awk '{print $3}' | sort -u | sed 's/^/    • /'
+
+# Divider
+printf '%*s' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '_'
