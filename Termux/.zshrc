@@ -22,6 +22,7 @@ alias tree-3='eza --tree -L 3'
 
 # Git
 alias git-commit-all="git add -A && git commit -m"
+alias git-push="git push origin $(git branch --show-current)"
 
 # Package Management:
 alias update="pkg update && pkg upgrade && updatedb"
@@ -36,8 +37,7 @@ alias reload='clear && source ~/.zshrc'
 # CONFIGURATION SCRIPTS
 # -------------------------------------------------- #
 eval "$(starship init zsh)"
-autoload -U add-zsh-hook
-add-zsh-hook precmd /data/data/com.termux/files/usr/bin/neofetch
+better-start
 
 
 # ENVIRONMENT VARIABLES
