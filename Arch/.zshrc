@@ -15,14 +15,16 @@ alias ll='ls -lah --color=auto'             # Detailed directory listing
 alias ls='ls --color=auto'                  # Standard `ls` command with color output
 alias mv='mv -i'                            # Prompt before moving files
 alias rm='rm -i'                            # Prompt before removing files
-alias tree='exa --tree'                     # Display a full tree view of the current directory
-alias tree-1='exa --tree -L 1'              # Display a tree view up to 1 level deep
-alias tree-2='exa --tree -L 2'              # Display a tree view up to 2 levels deep
-alias tree-3='exa --tree -L 3'              # Display a tree view up to 3 levels deep
+alias tree='eza --tree'                     # Display a full tree view of the current directory
+alias tree-1='eza --tree -L 1'              # Display a tree view up to 1 level deep
+alias tree-2='eza --tree -L 2'              # Display a tree view up to 2 levels deep
+alias tree-3='eza --tree -L 3'              # Display a tree view up to 3 levels deep
 
 # Git
 alias git-commit-all="git add -A && git commit -m"
-alias git-push="git push origin $(git branch --show-current)"
+git-push() {
+    git push origin "$(git rev-parse --abbrev-ref HEAD)"
+}
 
 # Networking
 alias myip="curl ifconfig.me"               # Display the external IP address
@@ -47,10 +49,8 @@ alias history='history | less'              # View command history with paginati
 alias reload='source ~/.zshrc && clear'     # Reload Zsh configuration and clear terminal
 
 # Terminal Screensavers
-fire='aafire | while read -r line; do echo "$line"; sleep 0.02; done'
 bonsai='cbonsai -S'
 rain='rain -r'
-alias fire=$fire
 alias bonsai=$bonsai
 alias screensaver='sh -c "$(shuf -n 1 -e htop $bonsai cmatrix asciiquarium pipes.sh $rain)"'
 
@@ -97,3 +97,4 @@ if [[ -n "$TMUX" ]]; then
 fi
 # Set NVM directory for managing node versions
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
