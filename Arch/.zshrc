@@ -52,6 +52,7 @@ alias reload='source ~/.zshrc && clear'     # Reload Zsh configuration and clear
 bonsai='cbonsai -S'
 rain='rain -r'
 alias bonsai=$bonsai
+alias monitor='sh -c "$(shuf -n 1 -e htop btop gotop)"'
 alias screensaver='sh -c "$(shuf -n 1 -e htop $bonsai cmatrix asciiquarium pipes.sh $rain)"'
 
 # TMUX Pane Management
@@ -97,4 +98,5 @@ if [[ -n "$TMUX" ]]; then
 fi
 # Set NVM directory for managing node versions
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+# This loads nvm bash_completion
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
