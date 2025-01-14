@@ -29,7 +29,7 @@ git-push() {
 # Networking
 alias myip="curl ifconfig.me"               # Display the external IP address
 alias nord-c="nordvpn connect --group p2p"
-alias fast-mirror="sudo pacman-mirrors --country United_States && sudo pacman-mirrors -f 10 && sudo pacman -Syyu"
+# alias fast-mirror="sudo pacman-mirrors --country United_States && sudo pacman-mirrors -f 10 && sudo pacman -Syyu" # FOR MANJARO ONLY
 
 # Package Management:
 # 1. clean cache (retaining 2 past versions), remove orphans, and refresh DBs
