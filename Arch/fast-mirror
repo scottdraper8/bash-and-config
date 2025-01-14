@@ -4,15 +4,15 @@
 show_help() {
     echo "Usage: rank-mirrors [options]"
     echo -e "\nOptions:"
-    echo "  -c, --country=COUNTRY_CODE(S)   Comma-separated list of country codes. Use 'auto' to detect country from locale or >
+    echo "  -c, --country=COUNTRY_CODE(S)   Comma-separated list of country codes. Use 'auto' to detect country from locale or 'all' to include all mirrors. (Default: auto)"
     echo -e "                                      Examples: -c US,CA,DE --country=auto\n"
-    echo "  -p, --protocol=PROTOCOL         Protocol to use for mirrors. Possible values: 'http', 'https', 'all'. (Default: all>
+    echo "  -p, --protocol=PROTOCOL         Protocol to use for mirrors. Possible values: 'http', 'https', 'all'. (Default: all)"
     echo -e "                                      Examples: -p all, --protocol=http\n"
     echo "  -i, --ip_version=VERSION        IP version to use for mirrors. Possible values: '4', '6', 'all'. (Default: all)"
     echo -e "                                      Examples: -i 4, --ip_version=all\n"
     echo "  -t, --timeout=SECONDS           Timeout for each mirror test in seconds. (Default: 5)"
     echo -e "                                      Examples: -t 10, --timeout=8\n"
-    echo "  -r, --rank=NUMBER               Rank the NUMBER fastest mirrors and update your mirror list with them. (Default: 10>
+    echo "  -r, --rank=NUMBER               Rank the NUMBER fastest mirrors and update your mirror list with them. (Default: 10)"
     echo -e "                                      Examples: -r 5, --rank=20\n"
     echo -e "  -h, --help                      Display this help message and exit.\n"
 }
@@ -21,7 +21,7 @@ show_help() {
 # If the locale detection fails, default to 'US'.
 detect_country_from_locale() {
     locale_country=$(locale | grep "LANG=" | awk -F '[_.]' '{print toupper($2)}')
-    
+
     if [[ -z "$locale_country" ]]; then
         locale_country="US"
     fi
@@ -168,7 +168,7 @@ total_mirrors=$(echo "$mirror_urls" | wc -l)  # Count the total number of mirror
 
 # Get the current terminal width to format the output accordingly.
 get_terminal_width() {
-    tput cols
+    tput cols 2>/dev/null || echo 80  # Fallback to 80 if tput fails
 }
 
 # Truncate URLs to fit within the terminal width if they are too long.
@@ -191,12 +191,22 @@ generate_dots() {
     local right_text="$2"
     local terminal_width="$3"
 
-    # Calculate how many dots are needed based on available space.
+    # Calculate required dots, ensuring at least 1 dot
     local dots_count=$((terminal_width - ${#left_text} - ${#right_text}))
-    
-    if [ $dots_count -gt 0 ]; then
-        printf "%.${dots_count}s" "............................................................................................................."
-    fi
+    dots_count=$((dots_count > 0 ? dots_count : 1))
+
+    # Create dots string using printf
+    printf '%*s' "$dots_count" | tr ' ' '.'
+}
+
+# Format the output line with proper spacing
+format_output_line() {
+    local left_text="$1"
+    local right_text="$2"
+    local terminal_width="$3"
+
+    local dots=$(generate_dots "$left_text" "$right_text" "$terminal_width")
+    printf "%s%s%s" "$left_text" "$dots" "$right_text"
 }
 
 # Measure the response time of a given mirror URL, with a custom timeout.
@@ -243,13 +253,10 @@ rank_counter=1
 for url in $mirror_urls; do
     truncated_url=$(truncate_url "$url" "$((terminal_width - 30))")  # Adjust for max width.
     left_text=$(printf "%-${num_padding}s Testing mirror: %s" "$rank_counter." "$truncated_url")
-    
+
     percentage_text=$(format_percentage "$rank_counter" "$total_mirrors")
 
-    dots=$(generate_dots "$left_text" "$percentage_text" "$terminal_width")
-
-    # Display the current mirror test status.
-    printf "%s%s%s\r" "$left_text" "$dots" "$percentage_text"
+    echo -ne "$(format_output_line "$left_text" "$percentage_text" "$terminal_width")\r"
 
     time_result=$(measure_response_time $url)
 
@@ -267,15 +274,14 @@ for url in $mirror_urls; do
     fi
 
     left_text=$(printf "%-${num_padding}s %s: %s" "$rank_counter." "$final_status" "$truncated_url")
-    dots=$(generate_dots "$left_text" "$result_text" "$terminal_width")
-    colored_output=$(printf "%s%s%s" "$left_text" "$dots" "$result_text")
+    colored_output=$(format_output_line "$left_text" "$result_text" "$terminal_width")
     print_with_color "$result_color" "$colored_output"
 
     # Add successful mirrors to the ranking list.
     if [[ $time_result != timeout* ]]; then
         mirror_times+=("$time_result")
     fi
-    
+
     ((rank_counter++))
 done
 
@@ -299,10 +305,7 @@ while IFS= read -r line; do
     truncated_url=$(truncate_url "$url" "$((terminal_width - 30))")
 
     left_text=$(printf "%02d. %s" "$rank_counter" "$truncated_url")
-    dots=$(generate_dots "$left_text" "$result_text" "$terminal_width")
-    
-    # Print the ranked mirrors in purple.
-    colored_output=$(printf "%s%s%s" "$left_text" "$dots" "$result_text")
+    colored_output=$(format_output_line "$left_text" "$result_text" "$terminal_width")
     print_with_color "35" "$colored_output"
 
     ((rank_counter++))
@@ -320,7 +323,7 @@ for mirror in "${top_mirrors[@]}"; do
     sudo sh -c "echo 'Server = $mirror' >> /etc/pacman.d/mirrorlist"
 done
 
-echo -e "\n\nUpdated /etc/pacman.d/mirrorlist ✔️\n" 
+echo -e "\n\nUpdated /etc/pacman.d/mirrorlist ✔️\n"
 
 # Clean up by removing the temporary mirror list file.
 rm "$mirrorlist_file"
