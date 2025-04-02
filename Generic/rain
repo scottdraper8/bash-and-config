@@ -17,7 +17,11 @@ show_help() {
     echo -e "                                      Examples: -k 32, --color-code=36\n"
     echo "  -s, --speed=SPEED               Speed of the raindrops. Values: 1 (slowest) to 5 (fastest). (Default: 3)"
     echo -e "                                      Examples: -s 4, --speed=2\n"
-    echo "  -r, --randomize                 Enable randomization of speed and density every 15 seconds."
+    echo "  -w, --wind=WIND                 Wind strength. Values: 1 (no wind) to 5 (strong wind). (Default: 1)"
+    echo -e "                                      Examples: -w 3, --wind=5\n"
+    echo "  -wd, --wind-dir=DIRECTION       Wind direction. Values: left, right, rand. (Default: right)"
+    echo -e "                                      Examples: -wd left, --wind-dir=rand\n"
+    echo "  -r, --randomize                 Enable randomization of speed, density, and wind direction every 15 seconds."
     echo -e "                                      By default, randomization is off.\n"
     echo "  -h, --help                      Display this help message and exit.\n"
     read -n 1 -s -r -p "Press any key to exit..."
@@ -27,6 +31,21 @@ show_help() {
 last_resize_time=0
 resize_debounce_delay=0.2  # Seconds to wait after last resize before processing
 resize_pending=false       # Initialize to false so we don't delay startup
+
+# Wind management variables
+current_wind_direction=1   # 1 for right, -1 for left
+current_wind_strength=0    # Current effective wind strength (may differ from wind_strength during lulls)
+next_wind_dir_change=0     # Timestamp for next wind direction change
+next_wind_lull=0           # Timestamp for next wind lull
+wind_lull_end=0            # Timestamp for when current lull ends
+wind_transitioning=false   # Flag for transitioning wind strength
+target_wind_strength=0     # Target wind strength during transitions
+transition_step=0          # Step size for wind strength transitions
+
+# Add these near the top with other global variables
+wind_update_counter=0  # Counter for wind updates
+dir_update_counter=0   # Counter for direction updates
+loop_counter=0         # Main loop counter
 
 # Initialize the screen (clear, hide cursor, disable echo).
 initialize_screen() {
@@ -40,6 +59,25 @@ initialize_screen() {
     
     # Ensure we're not in resize pending mode at startup
     resize_pending=false
+    
+    # Initialize wind variables
+    current_wind_strength=$wind_strength
+    if [[ "$wind_dir" == "left" ]]; then
+        current_wind_direction=-1
+    elif [[ "$wind_dir" == "right" ]]; then
+        current_wind_direction=1
+    else # rand
+        # Random initial direction
+        if (( RANDOM % 2 == 0 )); then
+            current_wind_direction=1
+        else
+            current_wind_direction=-1
+        fi
+    fi
+    
+    # Set initial change times
+    next_wind_dir_change=$(($(date +%s) + 8 + RANDOM % 13))  # 8-20 seconds for first change
+    next_wind_lull=$(($(date +%s) + 15 + RANDOM % 16))      # 15-30 seconds for first lull
 }
 
 # Replace the current update_dimensions function
@@ -118,6 +156,113 @@ get_drop_speed() {
     echo $actual_speed
 }
 
+# Convert wind strength to actual horizontal movement
+get_wind_shift() {
+    local setting=$1
+    local actual_shift
+    
+    case $setting in
+        0) actual_shift=0 ;;      # No wind (for lulls)
+        1) actual_shift=0 ;;      # No wind
+        2) actual_shift=1 ;;      # Light wind
+        3) actual_shift=2 ;;      # Medium wind
+        4) actual_shift=3 ;;      # Strong wind
+        5) actual_shift=4 ;;      # Very strong wind
+        *) actual_shift=0 ;;      # Default to no wind
+    esac
+    
+    echo $actual_shift
+}
+
+# Update wind direction based on time and settings - with less frequent changes
+update_wind_direction() {
+    # Only run this every 5 frames to reduce overhead
+    (( dir_update_counter++ % 5 != 0 )) && return
+    
+    local current_time=$(date +%s)
+    
+    # If we're not using random direction, just maintain the fixed direction
+    if [[ "$wind_dir" != "rand" ]]; then
+        if [[ "$wind_dir" == "left" ]]; then
+            current_wind_direction=-1
+        else # right
+            current_wind_direction=1
+        fi
+        return
+    fi
+    
+    # Check if it's time to change wind direction
+    if (( current_time >= next_wind_dir_change )); then
+        # Randomly choose a new direction
+        if (( RANDOM % 2 == 0 )); then
+            current_wind_direction=1
+        else
+            current_wind_direction=-1
+        fi
+        
+        # Set next change time (8-20 seconds from now) - LONGER INTERVAL
+        next_wind_dir_change=$((current_time + 8 + RANDOM % 13))
+    fi
+}
+
+# Update wind strength based on time and lull settings - with longer lulls
+update_wind_strength() {
+    # Only run this every 5 frames to reduce overhead
+    (( wind_update_counter++ % 5 != 0 )) && return
+    
+    local current_time=$(date +%s)
+    
+    # Only apply lulls if wind is not set to 1 (no wind)
+    if [[ "$wind_strength" -gt 1 ]]; then
+        # Check if we're in a transition
+        if [[ "$wind_transitioning" == "true" ]]; then
+            # Simple integer-based transition
+            if (( current_wind_strength < target_wind_strength )); then
+                (( current_wind_strength++ ))
+            elif (( current_wind_strength > target_wind_strength )); then
+                (( current_wind_strength-- ))
+            fi
+            
+            # Check if transition is complete
+            if (( current_wind_strength == target_wind_strength )); then
+                wind_transitioning=false
+                
+                # If we've reached the target and it was a lull target, set the end time
+                if (( target_wind_strength < wind_strength )); then
+                    # Lull lasts 3-7 seconds (LONGER LULLS)
+                    wind_lull_end=$((current_time + 3 + RANDOM % 5))
+                fi
+            fi
+        # Check if we're in a lull and it's time to end it
+        elif (( current_wind_strength < wind_strength && current_time >= wind_lull_end )); then
+            # Start transition back to normal wind strength
+            wind_transitioning=true
+            target_wind_strength=$wind_strength
+        # Check if it's time to start a new lull
+        elif (( current_time >= next_wind_lull && current_wind_strength == wind_strength )); then
+            # Start transitioning to a lull (lower or no wind)
+            wind_transitioning=true
+            # Either reduce to no wind or lower intensity (randomly chosen)
+            if (( RANDOM % 3 == 0 )); then
+                target_wind_strength=0  # Complete lull (no wind)
+            else
+                # Partial lull (reduced wind)
+                target_wind_strength=$(( wind_strength / 2 ))
+                # Ensure at least some reduction
+                if (( target_wind_strength >= wind_strength )); then
+                    target_wind_strength=$(( wind_strength - 1 ))
+                fi
+            fi
+            
+            # Set next lull time (15-30 seconds from now) - LONGER INTERVAL BETWEEN LULLS
+            next_wind_lull=$((current_time + 15 + RANDOM % 16))
+        fi
+    else
+        # For wind_strength=1, ensure current_wind_strength is also 1
+        current_wind_strength=1
+    fi
+}
+
 # Declare an associative array to track the position and speed of raindrops.
 declare -A raindrops
 
@@ -162,42 +307,39 @@ move_raindrops() {
     local current_width=${width:-1}
     [[ $current_width -lt 1 ]] && current_width=1
 
-    for pos in "${!raindrops[@]}"; do
-        # Check if the key still exists before processing
-        [[ -v raindrops["$pos"] ]] || continue 
+    # Calculate wind effect for this frame - simplified to use integers only
+    local wind_effect=$(($(get_wind_shift $current_wind_strength) * current_wind_direction))
 
+    for pos in "${!raindrops[@]}"; do
         IFS=',' read -r x y ch <<< "$pos"  # Extract x, y, and character
-        # Ensure we have a valid speed value before proceeding
+        # Get speed (skip error checking for performance)
         local speed=${raindrops[$pos]}
-        [[ -z "$speed" ]] && continue # Skip if speed is somehow missing
         
-        # Skip raindrops that are outside the terminal width or height
+        # Skip raindrops that are outside the terminal boundaries
         [[ $x -ge $current_width || $y -ge $current_height ]] && continue
 
-        local newY=$((y + speed))  # Calculate new y position
+        # Calculate new positions with faster integer arithmetic
+        local newY=$((y + speed))
+        local newX=$((x + wind_effect))
         
-        # Always use absolute positioning for clearing old position
-        if [[ "$y" =~ ^[0-9]+$ ]] && [ "$y" -ge 0 ] && [ "$y" -lt $current_height ]; then
-             buffer+="\e[${y};${x}H " # Clear old position with absolute positioning
+        # Clear old position
+        buffer+="\e[${y};${x}H "
+
+        # Check if raindrop is still on screen
+        if (( newY < current_height && newX >= 0 && newX < current_width )); then
+            # Draw at new position
+            buffer+="\e[${newY};${newX}H\e[${color}m${ch}\e[0m"
+            new_positions["$newX,$newY,$ch"]=$speed
         fi
-
-        # Use the potentially updated height for bounds check
-        if [ $newY -lt $current_height ]; then  
-            # Use absolute positioning for new position
-            buffer+="\e[${newY};${x}H\e[${color}m${ch}\e[0m"
-            new_positions["$x,$newY,$ch"]=$speed  # Store new position and speed
-        fi # Else: drop is off-screen, don't add to new_positions or buffer
     done
 
-    # Safely update raindrops array
-    raindrops=()  # Clear old raindrops safely
+    # Safely update raindrops array with new positions
+    raindrops=()  # Clear old raindrops
     for k in "${!new_positions[@]}"; do
-         # Check if speed value exists before assigning
-        local speed_val=${new_positions["$k"]}
-        [[ -n "$speed_val" ]] && raindrops["$k"]=$speed_val
+        raindrops["$k"]=${new_positions["$k"]}
     done
 
-    # Print the buffer only if it's not empty - all position updates at once
+    # Output all changes at once
     [[ -n "$buffer" ]] && echo -ne "$buffer"
 }
 
@@ -214,12 +356,13 @@ cleanup() {
 trap cleanup SIGINT SIGTERM EXIT
 trap update_dimensions SIGWINCH
 
-# Randomizes density and speed every 15 seconds if randomization is enabled.
+# Randomizes variables every 15 seconds if randomization is enabled.
 randomize_vars() {
     if [[ "$randomize" == "true" ]]; then
         while true; do
             density=$((RANDOM % 10 + 1))  # Randomize density between 1 and 10
             speed_range=$((RANDOM % 5 + 1))  # Randomize speed between 1 and 5
+            wind_dir="rand"  # Set wind direction to random when randomization is enabled
             sleep 15  # Wait 15 seconds before next randomization
         done
     fi
@@ -230,6 +373,8 @@ density=2
 rain_char='💧'
 color=35
 speed_range=3  # Default to medium speed now (changed from 2)
+wind_strength=1  # Default to no wind
+wind_dir="right"  # Default wind direction is right
 randomize=false
 
 # Parse command-line arguments and flags.
@@ -273,8 +418,43 @@ while [[ $# -gt 0 ]]; do
             [[ $speed_range -gt 5 ]] && speed_range=5
             shift 2
             ;;
+        -w=*|--wind=*)  # Handle --wind=VALUE or -w=VALUE
+            wind_strength="${1#*=}"
+            # Ensure wind_strength is within valid bounds
+            [[ $wind_strength -lt 1 ]] && wind_strength=1
+            [[ $wind_strength -gt 5 ]] && wind_strength=5
+            shift
+            ;;
+        -w|--wind)  # Handle --wind VALUE or -w VALUE
+            wind_strength="$2"
+            # Ensure wind_strength is within valid bounds
+            [[ $wind_strength -lt 1 ]] && wind_strength=1
+            [[ $wind_strength -gt 5 ]] && wind_strength=5
+            shift 2
+            ;;
+        -wd=*|--wind-dir=*)  # Handle --wind-dir=VALUE or -wd=VALUE
+            wind_dir="${1#*=}"
+            # Ensure wind_dir is valid
+            if [[ "$wind_dir" != "left" && "$wind_dir" != "right" && "$wind_dir" != "rand" ]]; then
+                echo "Error: Invalid wind direction. Valid values are 'left', 'right', or 'rand'."
+                show_help
+                exit 1
+            fi
+            shift
+            ;;
+        -wd|--wind-dir)  # Handle --wind-dir VALUE or -wd VALUE
+            wind_dir="$2"
+            # Ensure wind_dir is valid
+            if [[ "$wind_dir" != "left" && "$wind_dir" != "right" && "$wind_dir" != "rand" ]]; then
+                echo "Error: Invalid wind direction. Valid values are 'left', 'right', or 'rand'."
+                show_help
+                exit 1
+            fi
+            shift 2
+            ;;
         -r|--randomize)  # Handle --randomize or -r without an argument
             randomize=true
+            wind_dir="rand"  # Set wind direction to random when randomization is enabled
             shift
             ;;
         -h|--help)  # Display help message and exit
@@ -305,6 +485,12 @@ while true; do
     if [[ $key == "q" ]]; then  # Exit if 'q' is pressed
         cleanup
     fi
+    
+    # Only update wind metrics occasionally to reduce overhead
+    (( loop_counter++ % 3 == 0 )) && {
+        update_wind_direction
+        update_wind_strength
+    }
     
     # Handle resize debouncing
     if [[ "$resize_pending" == "true" ]]; then
