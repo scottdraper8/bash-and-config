@@ -32,10 +32,10 @@ printf '%*s' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '_'
 echo -e "\n\n  Total number of packages installed: $(pkg list-installed 2>/dev/null | wc -l)"
 echo -e "\n  Repositories installed:"
 
-{
-    cat $PREFIX/etc/apt/sources.list
-    cat $PREFIX/etc/apt/sources.list.d/*.list 2>/dev/null
-} | grep -v '^#' | awk '{print $3}' | sort -u | sed 's/^/    • /'
+find $PREFIX/etc/apt/sources.list.d -type f -name "*.sources" | while read sourcefile; do
+  repo_name=$(basename "$sourcefile" .sources)
+  echo "    • $repo_name"
+done
 
 # Divider
 printf '%*s' "${COLUMNS:-$(tput cols)}" '' | tr ' ' '_'
