@@ -9,19 +9,19 @@
 show_help() {
     echo "Usage: raindrop-script [options]"
     echo -e "\nOptions:"
-    echo "  -d, --density=DENSITY           Set the density of the raindrops. (Default: 2)"
-    echo -e "                                      Examples: -d 5, --density=3\n"
     echo "  -c, --char=CHARACTER            Character to use as raindrops. (Default: '💧')"
     echo -e "                                      Examples: -c @, --char='*'\n"
     echo "  --color-code=COLOR, -k=COLOR    ANSI color code for the raindrop. (Default: 35 for purple)"
     echo -e "                                      Examples: -k 32, --color-code=36\n"
-    echo "  -s, --speed=SPEED               Speed of the raindrops. Values: 1 (slowest) to 5 (fastest). (Default: 3)"
-    echo -e "                                      Examples: -s 4, --speed=2\n"
-    echo "  -w, --wind=WIND                 Wind strength. Values: 1 (no wind) to 5 (strong wind). (Default: 1)"
-    echo -e "                                      Examples: -w 3, --wind=5\n"
+    echo "  -d, --density=DENSITY           Set the density of the raindrops. (Default: 2)"
+    echo -e "                                      Examples: -d 5, --density=3, -d rand\n"
+    echo "  -s, --speed=SPEED               Speed of the raindrops. Values: 1 (slowest) to 5 (fastest) or 'rand'. (Default: 3)"
+    echo -e "                                      Examples: -s 4, --speed=2, -s rand\n"
+    echo "  -w, --wind=WIND                 Wind strength. Values: 1 (no wind) to 5 (strong wind) or 'rand'. (Default: 1)"
+    echo -e "                                      Examples: -w 3, --wind=5, -w rand\n"
     echo "  -wd, --wind-dir=DIRECTION       Wind direction. Values: left, right, rand. (Default: right)"
     echo -e "                                      Examples: -wd left, --wind-dir=rand\n"
-    echo "  -r, --randomize                 Enable randomization of speed, density, and wind direction every 15 seconds."
+    echo "  -r, --randomize                 Enable randomization of speed, density, wind strength, and wind direction."
     echo -e "                                      By default, randomization is off.\n"
     echo "  -h, --help                      Display this help message and exit.\n"
     read -n 1 -s -r -p "Press any key to exit..."
@@ -46,6 +46,12 @@ transition_step=0          # Step size for wind strength transitions
 wind_update_counter=0  # Counter for wind updates
 dir_update_counter=0   # Counter for direction updates
 loop_counter=0         # Main loop counter
+
+# Add variables to track randomization settings
+speed_random=false
+density_random=false
+wind_strength_random=false
+random_update_interval=15  # Seconds between random updates
 
 # Initialize the screen (clear, hide cursor, disable echo).
 initialize_screen() {
@@ -356,14 +362,59 @@ cleanup() {
 trap cleanup SIGINT SIGTERM EXIT
 trap update_dimensions SIGWINCH
 
-# Randomizes variables every 15 seconds if randomization is enabled.
+# Update randomize_vars() to avoid conflicts with lulls
 randomize_vars() {
-    if [[ "$randomize" == "true" ]]; then
+    # Flag to track if any randomization is enabled
+    local any_randomization=$randomize
+    
+    # Also enable randomization if any individual parameters are set to random
+    if [[ "$speed_random" == "true" || "$density_random" == "true" || "$wind_strength_random" == "true" || "$wind_dir" == "rand" ]]; then
+        any_randomization=true
+    fi
+    
+    if [[ "$any_randomization" == "true" ]]; then
         while true; do
-            density=$((RANDOM % 10 + 1))  # Randomize density between 1 and 10
-            speed_range=$((RANDOM % 5 + 1))  # Randomize speed between 1 and 5
-            wind_dir="rand"  # Set wind direction to random when randomization is enabled
-            sleep 15  # Wait 15 seconds before next randomization
+            local current_time=$(date +%s)
+            
+            # Randomize density if enabled
+            if [[ "$randomize" == "true" || "$density_random" == "true" ]]; then
+                density=$((RANDOM % 10 + 1))  # Randomize density between 1 and 10
+            fi
+            
+            # Randomize speed if enabled
+            if [[ "$randomize" == "true" || "$speed_random" == "true" ]]; then
+                speed_range=$((RANDOM % 5 + 1))  # Randomize speed between 1 and 5
+            fi
+            
+            # Randomize wind strength if enabled - with proper handling for lulls
+            if [[ "$randomize" == "true" || "$wind_strength_random" == "true" ]]; then
+                local new_wind_strength=$((RANDOM % 5 + 1))  # Generate new random wind value
+                
+                # Check if we're in the middle of a lull
+                if [[ "$wind_transitioning" == "true" || "$current_wind_strength" != "$wind_strength" ]]; then
+                    # We're in a lull or transition - need to handle carefully
+                    # Set wind_strength to new value but also update target if transitioning back to base
+                    wind_strength=$new_wind_strength
+                    
+                    # If transitioning back to base wind strength, update target
+                    if [[ "$wind_transitioning" == "true" && "$target_wind_strength" == "$wind_strength" ]]; then
+                        target_wind_strength=$new_wind_strength
+                    fi
+                    
+                else
+                    # Not in a lull - simple update
+                    wind_strength=$new_wind_strength
+                    current_wind_strength=$new_wind_strength
+                fi
+            fi
+            
+            # Randomize wind direction if enabled by randomize
+            if [[ "$randomize" == "true" ]]; then
+                wind_dir="rand"  # Set wind direction to random when randomization is enabled
+            fi
+            
+            # Wait before the next randomization
+            sleep $random_update_interval
         done
     fi
 }
@@ -382,10 +433,20 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -d=*|--density=*)  # Handle --density=VALUE or -d=VALUE
             density="${1#*=}"
+            # Check if density is set to rand
+            if [[ "$density" == "rand" ]]; then
+                density=$((RANDOM % 10 + 1))  # Initial random value
+                density_random=true
+            fi
             shift
             ;;
         -d|--density)  # Handle --density VALUE or -d VALUE
             density="$2"
+            # Check if density is set to rand
+            if [[ "$density" == "rand" ]]; then
+                density=$((RANDOM % 10 + 1))  # Initial random value
+                density_random=true
+            fi
             shift 2
             ;;
         -c=*|--char=*)  # Handle --char=VALUE or -c=VALUE
@@ -406,30 +467,54 @@ while [[ $# -gt 0 ]]; do
             ;;
         -s=*|--speed=*)  # Handle --speed=VALUE or -s=VALUE
             speed_range="${1#*=}"
-            # Ensure speed_range is within valid bounds
-            [[ $speed_range -lt 1 ]] && speed_range=1
-            [[ $speed_range -gt 5 ]] && speed_range=5
+            # Check if speed is set to rand
+            if [[ "$speed_range" == "rand" ]]; then
+                speed_range=$((RANDOM % 5 + 1))  # Initial random value
+                speed_random=true
+            else
+                # Ensure speed_range is within valid bounds
+                [[ $speed_range -lt 1 ]] && speed_range=1
+                [[ $speed_range -gt 5 ]] && speed_range=5
+            fi
             shift
             ;;
         -s|--speed)  # Handle --speed VALUE or -s VALUE
             speed_range="$2"
-            # Ensure speed_range is within valid bounds
-            [[ $speed_range -lt 1 ]] && speed_range=1
-            [[ $speed_range -gt 5 ]] && speed_range=5
+            # Check if speed is set to rand
+            if [[ "$speed_range" == "rand" ]]; then
+                speed_range=$((RANDOM % 5 + 1))  # Initial random value
+                speed_random=true
+            else
+                # Ensure speed_range is within valid bounds
+                [[ $speed_range -lt 1 ]] && speed_range=1
+                [[ $speed_range -gt 5 ]] && speed_range=5
+            fi
             shift 2
             ;;
         -w=*|--wind=*)  # Handle --wind=VALUE or -w=VALUE
             wind_strength="${1#*=}"
-            # Ensure wind_strength is within valid bounds
-            [[ $wind_strength -lt 1 ]] && wind_strength=1
-            [[ $wind_strength -gt 5 ]] && wind_strength=5
+            # Check if wind is set to rand
+            if [[ "$wind_strength" == "rand" ]]; then
+                wind_strength=$((RANDOM % 5 + 1))  # Initial random value
+                wind_strength_random=true
+            else
+                # Ensure wind_strength is within valid bounds
+                [[ $wind_strength -lt 1 ]] && wind_strength=1
+                [[ $wind_strength -gt 5 ]] && wind_strength=5
+            fi
             shift
             ;;
         -w|--wind)  # Handle --wind VALUE or -w VALUE
             wind_strength="$2"
-            # Ensure wind_strength is within valid bounds
-            [[ $wind_strength -lt 1 ]] && wind_strength=1
-            [[ $wind_strength -gt 5 ]] && wind_strength=5
+            # Check if wind is set to rand
+            if [[ "$wind_strength" == "rand" ]]; then
+                wind_strength=$((RANDOM % 5 + 1))  # Initial random value
+                wind_strength_random=true
+            else
+                # Ensure wind_strength is within valid bounds
+                [[ $wind_strength -lt 1 ]] && wind_strength=1
+                [[ $wind_strength -gt 5 ]] && wind_strength=5
+            fi
             shift 2
             ;;
         -wd=*|--wind-dir=*)  # Handle --wind-dir=VALUE or -wd=VALUE
@@ -453,8 +538,15 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -r|--randomize)  # Handle --randomize or -r without an argument
+            # Set all fields to rand
+            density=$((RANDOM % 10 + 1))          # Immediate random initial value
+            density_random=true
+            speed_range=$((RANDOM % 5 + 1))       # Immediate random initial value
+            speed_random=true
+            wind_strength=$((RANDOM % 5 + 1))     # Immediate random initial value
+            wind_strength_random=true
+            wind_dir="rand"                       # Special handling for direction
             randomize=true
-            wind_dir="rand"  # Set wind direction to random when randomization is enabled
             shift
             ;;
         -h|--help)  # Display help message and exit
