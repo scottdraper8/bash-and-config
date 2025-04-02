@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/local/bash5/bin/bash
 
 # Original code by seehrum (https://www.reddit.com/r/bash/comments/1cj3xee/rainsh_raining_in_the_linux_terminal/)
 
@@ -29,8 +29,37 @@ initialize_screen() {
     clear
     tput civis  # Hide cursor
     stty -echo  # Disable input echoing
-    height=$(tput lines)  # Get terminal height
-    width=$(tput cols)    # Get terminal width
+    update_dimensions # Get initial dimensions
+}
+
+# Function to update terminal dimensions upon resize.
+update_dimensions() {
+    # Store old dimensions for comparison
+    local old_width=$width
+    local old_height=$height
+    
+    # Add a short delay to let terminal stabilize after resize
+    sleep 0.2
+    
+    # Get the potentially new terminal dimensions.
+    height=$(tput lines)
+    width=$(tput cols)
+    
+    # Complete terminal reset and cleanup
+    printf "\033[2J"     # Clear entire screen
+    printf "\033[3J"     # Clear scrollback buffer
+    printf "\033[H"      # Move cursor to home position
+    
+    # Force a full tput reset of the terminal
+    tput reset
+    tput civis           # Hide cursor again after reset
+    
+    # Completely clear the raindrops array after a resize
+    raindrops=()
+    
+    # Set a flag to indicate we're in a post-resize stabilization period
+    resize_stabilizing=true
+    stabilization_counter=0
 }
 
 # Declare an associative array to track the position and speed of raindrops.
@@ -39,11 +68,16 @@ declare -A raindrops
 # Places raindrops on random columns with random speeds, based on the density.
 place_raindrop() {
     local chars=("$rain_char")  # Treats rain_char as an array to support multiple characters
+    # Ensure width is at least 1 to avoid modulo by zero if terminal is rapidly squashed
+    local current_width=${width:-1} 
+    [[ $current_width -lt 1 ]] && current_width=1 
+
     for ((i=0; i<density; i++)); do
         for ch in "${chars[@]}"; do
-            local x=$((RANDOM % width))  # Random x position
-            local speed=$((RANDOM % speed_range + 1))  # Random speed
-            raindrops["$x,0,$ch"]=$speed  # Add raindrop to the array with its speed
+            # Use the potentially updated width for placement
+            local x=$((RANDOM % current_width))  
+            local speed=$((RANDOM % speed_range + 1)) 
+            raindrops["$x,0,$ch"]=$speed  
         done
     done
 }
@@ -52,24 +86,49 @@ place_raindrop() {
 move_raindrops() {
     declare -A new_positions  # Temporary array to hold updated positions
     local buffer=""
+    # Ensure height is valid
+    local current_height=${height:-1}
+    [[ $current_height -lt 1 ]] && current_height=1
+    # Ensure width is valid
+    local current_width=${width:-1}
+    [[ $current_width -lt 1 ]] && current_width=1
 
     for pos in "${!raindrops[@]}"; do
-        IFS=',' read -r x y ch <<< "$pos"  # Extract x, y, and character
-        local speed=${raindrops[$pos]}
-        local newY=$((y + speed))  # Calculate new y position
-        buffer+="\e[${y};${x}H "  # Clear the old position
+        # Check if the key still exists before processing
+        [[ -v raindrops["$pos"] ]] || continue 
 
-        if [ $newY -lt $height ]; then  # Check if still within the screen
+        IFS=',' read -r x y ch <<< "$pos"  # Extract x, y, and character
+        # Ensure we have a valid speed value before proceeding
+        local speed=${raindrops[$pos]}
+        [[ -z "$speed" ]] && continue # Skip if speed is somehow missing
+        
+        # Skip raindrops that are outside the terminal width
+        [[ $x -ge $current_width ]] && continue
+
+        local newY=$((y + speed))  # Calculate new y position
+        
+        # Check if old position y is valid before attempting to clear
+        if [[ "$y" =~ ^[0-9]+$ ]] && [ "$y" -ge 0 ]; then
+             buffer+="\e[${y};${x}H "  # Clear the old position
+        fi
+
+        # Use the potentially updated height for bounds check
+        if [ $newY -lt $current_height ]; then  
             buffer+="\e[${newY};${x}H\e[${color}m${ch}\e[0m"  # Move raindrop to new position
             new_positions["$x,$newY,$ch"]=$speed  # Store new position and speed
-        fi
+        fi # Else: drop is off-screen, don't add to new_positions or buffer
     done
 
-    raindrops=()  # Clear old raindrops
+    # Safely update raindrops array
+    raindrops=()  # Clear old raindrops safely
     for k in "${!new_positions[@]}"; do
-        raindrops["$k"]=${new_positions["$k"]}  # Update with new positions
+         # Check if speed value exists before assigning
+        local speed_val=${new_positions["$k"]}
+        [[ -n "$speed_val" ]] && raindrops["$k"]=$speed_val
     done
-    echo -ne "$buffer"  # Output the updated buffer
+
+    # Print the buffer only if it's not empty
+    [[ -n "$buffer" ]] && echo -ne "$buffer"
 }
 
 # Resets terminal settings to normal on exit (shows cursor, enables input echoing).
@@ -81,7 +140,9 @@ cleanup() {
 }
 
 # Trap signals to ensure cleanup is called on exit or script interruption.
+# Also trap SIGWINCH to handle terminal resizing.
 trap cleanup SIGINT SIGTERM EXIT
+trap update_dimensions SIGWINCH
 
 # Randomizes density and speed every 15 seconds if randomization is enabled.
 randomize_vars() {
@@ -158,13 +219,39 @@ initialize_screen
 # If randomization is enabled, run the randomize_vars function in the background.
 randomize_vars &
 
+# Add to main loop:
+resize_stabilizing=false
+stabilization_counter=0
+
 # Main loop for animation: place and move raindrops, check for 'q' key to quit.
 while true; do
     read -s -n 1 -t 0.01 key  # Read keyboard input non-blocking
     if [[ $key == "q" ]]; then  # Exit if 'q' is pressed
         cleanup
     fi
-    place_raindrop  # Place new raindrops
-    move_raindrops  # Move existing raindrops
+    
+    # Use copies of potentially volatile width/height for this frame
+    frame_width=$width
+    frame_height=$height
+
+    # Add safety checks before calling functions dependent on dimensions
+    if [[ "$frame_width" -gt 0 && "$frame_height" -gt 0 ]]; then
+        if [[ "$resize_stabilizing" == true ]]; then
+            ((stabilization_counter++))
+            if [[ $stabilization_counter -ge 10 ]]; then  # Increased from 5 to 10 iterations
+                resize_stabilizing=false
+                stabilization_counter=0
+                # Do one final clear to ensure a clean start
+                printf "\033[2J\033[H"
+            else
+                # Skip drawing during stabilization period
+                sleep 0.05  # Increased from 0.03 to 0.05
+                continue
+            fi
+        fi
+        place_raindrop  # Place new raindrops using current width
+        move_raindrops  # Move existing raindrops using current height
+    fi
+    
     sleep 0.01  # Small delay to control animation speed
 done
