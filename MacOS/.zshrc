@@ -14,7 +14,7 @@ alias la='ls -A --color=auto'               # Show all files including hidden, b
 alias ll='ls -lah --color=auto'             # Detailed directory listing
 alias ls='ls --color=auto'                  # Standard `ls` command with color output
 alias mv='mv -i'                            # Prompt before moving files
-alias rm='rm -i'                            # Prompt before removing files
+# alias rm='rm -i'                            # Prompt before removing files
 alias tree='eza --tree'                     # Display a full tree view of the current directory
 alias tree-1='eza --tree -L 1'              # Display a tree view up to 1 level deep
 alias tree-2='eza --tree -L 2'              # Display a tree view up to 2 levels deep
@@ -22,7 +22,76 @@ alias tree-3='eza --tree -L 3'              # Display a tree view up to 3 levels
 
 # Git
 alias git-commit-all="git add -A && git commit -m"
-alias git-push="git push origin $(git branch --show-current)"
+alias gti="git"
+
+git-pull() {
+  local rebase=""
+  local ff_only=""
+  
+  # Check for --rebase and --ff-only options
+  for arg in "$@"; do
+    case $arg in
+      --rebase) rebase="--rebase" ;;
+      --ff-only) ff_only="--ff-only" ;;
+    esac
+  done
+
+  # Default branch is the current branch
+  local branch=$(git symbolic-ref --short HEAD)
+
+  # Execute the git pull command with the appropriate options
+  git pull $rebase $ff_only origin "$branch"
+}
+
+git-hard-reset() {
+  if [[ -z $1 ]]; then
+    echo "Usage: git-hard-reset <number_of_commits>"
+    return 1
+  fi
+
+  if [[ $1 =~ ^[0-9]+$ ]]; then
+    git reset --hard HEAD~$1
+    echo "Hard reset performed for the last $1 commit(s)."
+  else
+    echo "Error: Argument must be a positive integer."
+    return 1
+  fi
+}
+
+git-push() {
+  local force=""
+  local force_lease=""
+  
+  # Check for --force and --force-lease options
+  for arg in "$@"; do
+    case $arg in
+      --force) force="--force" ;;
+      --force-lease) force_lease="--force-with-lease" ;;
+    esac
+  done
+
+  # Default branch is the current branch
+  local branch=$(git symbolic-ref --short HEAD)
+
+  # Execute the git push command with the appropriate options
+  git push $force $force_lease origin "$branch"
+}
+
+git-soft-reset() {
+  if [[ -z $1 ]]; then
+    echo "Usage: git-soft-reset <number_of_commits>"
+    return 1
+  fi
+
+  if [[ $1 =~ ^[0-9]+$ ]]; then
+    git reset --soft HEAD~$1
+    echo "Soft reset performed for the last $1 commit(s)."
+  else
+    echo "Error: Argument must be a positive integer."
+    return 1
+  fi
+}
+
 
 # Networking
 alias ip-all="ifconfig -a"                  # Display all network interfaces and their IPs
@@ -43,6 +112,14 @@ alias update='brew update && brew upgrade && brew autoremove && sudo /usr/libexe
 alias py="python3"
 alias python="python3"
 
+# System
+alias lock='/usr/bin/python3 -c "import ctypes; ctypes.cdll.LoadLibrary(\"/System/Library/PrivateFrameworks/login.framework/Versions/Current/login\").SACLockScreenImmediate()"'
+alias poweroff='sudo shutdown -h now'
+alias reboot='sudo shutdown -r now'
+alias restart='sudo shutdown -r now'
+alias shutdown='sudo shutdown -h now'
+alias sleep='pmset sleepnow'
+
 # Terminal Interface
 alias cls='clear'                           # Clear terminal
 alias h='history | less'                    # View command history with pagination
@@ -50,10 +127,10 @@ alias history='history | less'              # View command history with paginati
 alias reload='source ~/.zshrc && clear'     # Reload Zsh configuration and clear terminal
 
 # Terminal Screensavers
-bonsai='cbonsai -S'
 rain='rain -r'
-alias bonsai=$bonsai
-alias screensaver='sh -c "$(shuf -n 1 -e htop $bonsai cmatrix asciiquarium pipes.sh $rain)"'
+alias bonsai='cbonsai -S'
+alias monitor='sh -c "$(shuf -n 1 -e btop gotop)"'
+alias screensaver='sh -c "$(shuf -n 1 -e asciiquarium btop cmatrix gotop nyancat pipes.sh $rain)"'
 
 # TMUX Pane Management
 alias tnew='tmux new'                       # Start a new tmux session
@@ -90,12 +167,26 @@ setopt HIST_REDUCE_BLANKS                   # Remove excessive blank spaces from
 
 # CONFIGURATION SCRIPTS
 # ------------------------------------------------------------ #
-# Launch Zsh with Starship
-eval "$(starship init zsh)"
+# Set PATH and FPATH (for shell functions, like completions)
+export PATH="$PATH:/Users/scott/.local/bin"
+fpath+=~/.zfunc
+
 # Set NVM directory for managing node versions
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
 # Set tmux to use ~/.zshrc instead of /tmp/scott-code-zsh/.zshrc
 if [[ -n "$TMUX" ]]; then
     unset VSCODE_SHELL_INTEGRATION
+fi
+
+# pipx shell completion
+eval "$(register-python-argcomplete pipx)"
+
+# Poetry shell completion
+autoload -Uz compinit && compinit
+
+# Set up shell with oh-my-posh
+if [ "$TERM_PROGRAM" != "Apple_Terminal" ]; then
+  eval "$(oh-my-posh init zsh --config $(brew --prefix oh-my-posh)/themes/night-owl.omp.json)"
 fi
