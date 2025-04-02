@@ -274,7 +274,7 @@ stabilization_counter=0
 
 # Main loop for animation: place and move raindrops, check for 'q' key to quit.
 while true; do
-    read -s -n 1 -t 0.01 key  # Read keyboard input non-blocking
+    read -s -n 1 -t 0.001 key  # Read keyboard input non-blocking (very short timeout)
     if [[ $key == "q" ]]; then  # Exit if 'q' is pressed
         cleanup
     fi
@@ -289,7 +289,7 @@ while true; do
             process_resize
         else
             # Skip rendering this frame while waiting for resize to settle
-            sleep 0.01
+            sleep 0.001
             continue
         fi
     fi
@@ -302,14 +302,14 @@ while true; do
     if [[ "$frame_width" -gt 0 && "$frame_height" -gt 0 ]]; then
         if [[ "$resize_stabilizing" == true ]]; then
             ((stabilization_counter++))
-            if [[ $stabilization_counter -ge 15 ]]; then  # Increased to 15 iterations for more stability
+            if [[ $stabilization_counter -ge 15 ]]; then
                 resize_stabilizing=false
                 stabilization_counter=0
                 # Do one final clear to ensure a clean start
                 clear_entire_screen
             else
                 # Skip drawing during stabilization period
-                sleep 0.05
+                sleep 0.01
                 continue
             fi
         fi
@@ -317,5 +317,6 @@ while true; do
         move_raindrops  # Move existing raindrops using current height
     fi
     
-    sleep 0.01  # Small delay to control animation speed
+    # Fixed 10ms delay for smooth animation
+    sleep 0.01
 done
