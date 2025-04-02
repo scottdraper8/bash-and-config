@@ -23,25 +23,37 @@ show_help() {
     read -n 1 -s -r -p "Press any key to exit..."
 }
 
-# Initializes terminal settings: clears the screen, hides the cursor, 
-# disables input echoing, and captures terminal dimensions.
+# Add near the top with other global variables
+last_resize_time=0
+resize_debounce_delay=0.2  # Seconds to wait after last resize before processing
+resize_pending=false       # Initialize to false so we don't delay startup
+
+# Initialize the screen (clear, hide cursor, disable echo).
 initialize_screen() {
     clear
     tput civis  # Hide cursor
     stty -echo  # Disable input echoing
-    update_dimensions # Get initial dimensions
+    
+    # Get dimensions directly instead of through update_dimensions
+    height=$(tput lines)
+    width=$(tput cols)
+    
+    # Ensure we're not in resize pending mode at startup
+    resize_pending=false
 }
 
-# Function to update terminal dimensions upon resize.
+# Replace the current update_dimensions function
 update_dimensions() {
-    # Store old dimensions for comparison
-    local old_width=$width
-    local old_height=$height
+    # Record the current time
+    last_resize_time=$(date +%s.%N)
     
-    # Add a short delay to let terminal stabilize after resize
-    sleep 0.2
-    
-    # Get the potentially new terminal dimensions.
+    # Set a flag that we're in resize mode but don't process yet
+    resize_pending=true
+}
+
+# Add a new function to handle the actual resize processing
+process_resize() {
+    # Get the new terminal dimensions
     height=$(tput lines)
     width=$(tput cols)
     
@@ -60,6 +72,33 @@ update_dimensions() {
     # Set a flag to indicate we're in a post-resize stabilization period
     resize_stabilizing=true
     stabilization_counter=0
+    
+    # Force a redraw of the entire visible area to clear any artifacts
+    clear_entire_screen
+    
+    # Reset the pending flag
+    resize_pending=false
+}
+
+# New function to clear the entire visible area
+clear_entire_screen() {
+    local clear_buffer=""
+    local current_height=${height:-24}  # Default if not set
+    local current_width=${width:-80}    # Default if not set
+    
+    # Generate a buffer to clear every cell on screen
+    for ((y=1; y<=current_height; y++)); do
+        clear_buffer+="\e[${y};1H"
+        for ((x=1; x<=current_width; x++)); do
+            clear_buffer+=" "
+        done
+    done
+    
+    # Reset cursor to home
+    clear_buffer+="\e[H"
+    
+    # Apply all at once
+    echo -ne "$clear_buffer"
 }
 
 # Declare an associative array to track the position and speed of raindrops.
@@ -72,14 +111,23 @@ place_raindrop() {
     local current_width=${width:-1} 
     [[ $current_width -lt 1 ]] && current_width=1 
 
+    # Create buffer for new raindrops
+    local new_drops_buffer=""
+    
     for ((i=0; i<density; i++)); do
         for ch in "${chars[@]}"; do
             # Use the potentially updated width for placement
             local x=$((RANDOM % current_width))  
             local speed=$((RANDOM % speed_range + 1)) 
-            raindrops["$x,0,$ch"]=$speed  
+            raindrops["$x,0,$ch"]=$speed
+            
+            # Add new raindrop to buffer with absolute positioning
+            new_drops_buffer+="\e[1;${x}H\e[${color}m${ch}\e[0m"
         done
     done
+    
+    # Output all new raindrops at once
+    [[ -n "$new_drops_buffer" ]] && echo -ne "$new_drops_buffer"
 }
 
 # Moves the raindrops down by their respective speeds and erases them once off-screen.
@@ -102,19 +150,20 @@ move_raindrops() {
         local speed=${raindrops[$pos]}
         [[ -z "$speed" ]] && continue # Skip if speed is somehow missing
         
-        # Skip raindrops that are outside the terminal width
-        [[ $x -ge $current_width ]] && continue
+        # Skip raindrops that are outside the terminal width or height
+        [[ $x -ge $current_width || $y -ge $current_height ]] && continue
 
         local newY=$((y + speed))  # Calculate new y position
         
-        # Check if old position y is valid before attempting to clear
-        if [[ "$y" =~ ^[0-9]+$ ]] && [ "$y" -ge 0 ]; then
-             buffer+="\e[${y};${x}H "  # Clear the old position
+        # Always use absolute positioning for clearing old position
+        if [[ "$y" =~ ^[0-9]+$ ]] && [ "$y" -ge 0 ] && [ "$y" -lt $current_height ]; then
+             buffer+="\e[${y};${x}H " # Clear old position with absolute positioning
         fi
 
         # Use the potentially updated height for bounds check
         if [ $newY -lt $current_height ]; then  
-            buffer+="\e[${newY};${x}H\e[${color}m${ch}\e[0m"  # Move raindrop to new position
+            # Use absolute positioning for new position
+            buffer+="\e[${newY};${x}H\e[${color}m${ch}\e[0m"
             new_positions["$x,$newY,$ch"]=$speed  # Store new position and speed
         fi # Else: drop is off-screen, don't add to new_positions or buffer
     done
@@ -127,7 +176,7 @@ move_raindrops() {
         [[ -n "$speed_val" ]] && raindrops["$k"]=$speed_val
     done
 
-    # Print the buffer only if it's not empty
+    # Print the buffer only if it's not empty - all position updates at once
     [[ -n "$buffer" ]] && echo -ne "$buffer"
 }
 
@@ -230,6 +279,21 @@ while true; do
         cleanup
     fi
     
+    # Handle resize debouncing
+    if [[ "$resize_pending" == "true" ]]; then
+        current_time=$(date +%s.%N)
+        time_diff=$(echo "$current_time - $last_resize_time" | bc)
+        
+        # If enough time has passed since the last resize event, process the resize
+        if (( $(echo "$time_diff > $resize_debounce_delay" | bc -l) )); then
+            process_resize
+        else
+            # Skip rendering this frame while waiting for resize to settle
+            sleep 0.01
+            continue
+        fi
+    fi
+    
     # Use copies of potentially volatile width/height for this frame
     frame_width=$width
     frame_height=$height
@@ -238,14 +302,14 @@ while true; do
     if [[ "$frame_width" -gt 0 && "$frame_height" -gt 0 ]]; then
         if [[ "$resize_stabilizing" == true ]]; then
             ((stabilization_counter++))
-            if [[ $stabilization_counter -ge 10 ]]; then  # Increased from 5 to 10 iterations
+            if [[ $stabilization_counter -ge 15 ]]; then  # Increased to 15 iterations for more stability
                 resize_stabilizing=false
                 stabilization_counter=0
                 # Do one final clear to ensure a clean start
-                printf "\033[2J\033[H"
+                clear_entire_screen
             else
                 # Skip drawing during stabilization period
-                sleep 0.05  # Increased from 0.03 to 0.05
+                sleep 0.05
                 continue
             fi
         fi
